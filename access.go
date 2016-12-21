@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"net/http"
-	"strings"
 	"time"
 
 	"golang.org/x/net/context"
@@ -112,6 +111,11 @@ type AccessTokenGen interface {
 	GenerateAccessToken(data *AccessData, generaterefresh bool) (accesstoken string, refreshtoken string, err error)
 }
 
+// AccessTokenSubScoper checks if the requested scopes of AT are a subset of already granted scopes.
+type AccessTokenSubScoper interface {
+	CheckSubScopes(requestedScopes string, grantedScopes string) (resultingScope string, err error)
+}
+
 // HandleAccessRequest is the http.HandlerFunc for handling access token requests
 func (s *Server) HandleAccessRequest(w *Response, r *http.Request) *AccessRequest {
 	// Only allow GET or POST
@@ -175,7 +179,7 @@ func (s *Server) handleAuthorizationCodeRequest(w *Response, r *http.Request) *A
 
 	// "code" is required
 	if ret.Code == "" {
-		w.SetError(E_INVALID_GRANT, "")
+		w.SetError(E_INVALID_GRANT, "code parameter is required")
 		return nil
 	}
 
@@ -188,30 +192,35 @@ func (s *Server) handleAuthorizationCodeRequest(w *Response, r *http.Request) *A
 	var err error
 	ret.AuthorizeData, err = w.GetStorage().LoadAuthorize(ctx, ret.Code)
 	if err != nil {
-		w.SetError(E_INVALID_GRANT, "")
+		w.SetError(E_INVALID_GRANT, "bad authorization code")
 		w.InternalError = err
 		return nil
 	}
 	if ret.AuthorizeData == nil {
 		w.SetError(E_UNAUTHORIZED_CLIENT, "")
+		w.InternalError = errors.New("missing authorize data")
 		return nil
 	}
 	if ret.AuthorizeData.Client == nil {
 		w.SetError(E_UNAUTHORIZED_CLIENT, "")
+		w.InternalError = errors.New("missing client in authorize data")
 		return nil
 	}
 	if ret.AuthorizeData.Client.GetRedirectUri() == "" {
 		w.SetError(E_UNAUTHORIZED_CLIENT, "")
+		w.InternalError = errors.New("client missing redirect URI")
 		return nil
 	}
 	if ret.AuthorizeData.IsExpiredAt(s.Now()) {
 		w.SetError(E_INVALID_GRANT, "")
+		w.InternalError = errors.New("authorize data is expired")
 		return nil
 	}
 
 	// code must be from the client
 	if ret.AuthorizeData.Client.GetId() != ret.Client.GetId() {
 		w.SetError(E_INVALID_GRANT, "")
+		w.InternalError = errors.New("client id of authorize data doesn't match request's")
 		return nil
 	}
 
@@ -265,30 +274,6 @@ func (s *Server) handleAuthorizationCodeRequest(w *Response, r *http.Request) *A
 	return ret
 }
 
-func extraScopes(access_scopes, refresh_scopes string) bool {
-	access_scopes_list := strings.Split(access_scopes, ",")
-	refresh_scopes_list := strings.Split(refresh_scopes, ",")
-
-	access_map := make(map[string]int)
-
-	for _, scope := range access_scopes_list {
-		if scope == "" {
-			continue
-		}
-		access_map[scope] = 1
-	}
-
-	for _, scope := range refresh_scopes_list {
-		if scope == "" {
-			continue
-		}
-		if _, ok := access_map[scope]; !ok {
-			return true
-		}
-	}
-	return false
-}
-
 func (s *Server) handleRefreshTokenRequest(w *Response, r *http.Request) *AccessRequest {
 	ctx := contextFromRequest(r)
 
@@ -310,7 +295,8 @@ func (s *Server) handleRefreshTokenRequest(w *Response, r *http.Request) *Access
 
 	// "refresh_token" is required
 	if ret.Code == "" {
-		w.SetError(E_INVALID_GRANT, "")
+		w.SetError(E_INVALID_GRANT, "refresh_token parameter is required")
+		w.InternalError = errors.New("refresh_token parameter is required")
 		return nil
 	}
 
@@ -329,14 +315,17 @@ func (s *Server) handleRefreshTokenRequest(w *Response, r *http.Request) *Access
 	}
 	if ret.AccessData == nil {
 		w.SetError(E_UNAUTHORIZED_CLIENT, "")
+		w.InternalError = errors.New("missing access data")
 		return nil
 	}
 	if ret.AccessData.Client == nil {
 		w.SetError(E_UNAUTHORIZED_CLIENT, "")
+		w.InternalError = errors.New("missing client in access data")
 		return nil
 	}
 	if ret.AccessData.Client.GetRedirectUri() == "" {
 		w.SetError(E_UNAUTHORIZED_CLIENT, "")
+		w.InternalError = errors.New("client missing redirect URI")
 		return nil
 	}
 
@@ -355,7 +344,8 @@ func (s *Server) handleRefreshTokenRequest(w *Response, r *http.Request) *Access
 		ret.Scope = ret.AccessData.Scope
 	}
 
-	if extraScopes(ret.AccessData.Scope, ret.Scope) {
+	ret.Scope, err = s.AccessTokenSubScoper.CheckSubScopes(ret.Scope, ret.AccessData.Scope)
+	if err != nil {
 		w.SetError(E_ACCESS_DENIED, "")
 		w.InternalError = errors.New("the requested scope must not include any scope not originally granted by the resource owner")
 		return nil
@@ -385,7 +375,8 @@ func (s *Server) handlePasswordRequest(w *Response, r *http.Request) *AccessRequ
 
 	// "username" and "password" is required
 	if ret.Username == "" || ret.Password == "" {
-		w.SetError(E_INVALID_GRANT, "")
+		w.SetError(E_INVALID_GRANT, "username and password parameters missing")
+		w.InternalError = errors.New("username and password parameters missing")
 		return nil
 	}
 
@@ -551,6 +542,7 @@ func getClient(ctx context.Context, auth *BasicAuth, storage StorageWithContext,
 	}
 	if client == nil {
 		w.SetError(E_UNAUTHORIZED_CLIENT, "")
+		w.InternalError = errors.New("missing client for basic request")
 		return nil
 	}
 
@@ -561,6 +553,7 @@ func getClient(ctx context.Context, auth *BasicAuth, storage StorageWithContext,
 
 	if client.GetRedirectUri() == "" {
 		w.SetError(E_UNAUTHORIZED_CLIENT, "")
+		w.InternalError = errors.New("client missing redirect URI")
 		return nil
 	}
 	return client

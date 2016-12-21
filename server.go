@@ -6,12 +6,13 @@ import (
 
 // Server is an OAuth2 implementation
 type Server struct {
-	Config             *ServerConfig
+	Config            *ServerConfig
 	Storage            Storage // deprecated in favor of StorageWithContext
 	StorageWithContext StorageWithContext
-	AuthorizeTokenGen  AuthorizeTokenGen
-	AccessTokenGen     AccessTokenGen
-	Now                func() time.Time
+	AuthorizeTokenGen AuthorizeTokenGen
+	AccessTokenGen    AccessTokenGen
+	Now               func() time.Time
+	AccessTokenSubScoper AccessTokenSubScoper
 }
 
 // NewServer creates a new server instance
@@ -27,6 +28,7 @@ func NewServerWithContext(config *ServerConfig, storage StorageWithContext) *Ser
 		AuthorizeTokenGen:  &AuthorizeTokenGenDefault{},
 		AccessTokenGen:     &AccessTokenGenDefault{},
 		Now:                time.Now,
+		AccessTokenSubScoper: &AccessTokenSubScoperDefault{},
 	}
 }
 
